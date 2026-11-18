@@ -1,0 +1,197 @@
+# Patient Access Case Tracker. All data is synthetic.
+# Deployed to AWS AppSync (Cognito user pool auth). Every field resolves through
+# one Lambda, which enforces role-based access and writes the audit log.
+
+enum Step { ENROLLMENT BENEFITS_VERIFICATION PRIOR_AUTHORIZATION FIRST_FILL ON_THERAPY }
+enum CaseStatus { ACTIVE ON_HOLD COMPLETED DISCONTINUED }
+enum SlaState { ON_TRACK AT_RISK STUCK }
+enum Role { INTAKE_COORDINATOR CASE_MANAGER SUPERVISOR COMPLIANCE_AUDITOR }
+enum Scope { MINE ALL }
+enum NoteKind { NOTE CALL }
+enum Urgency { LOW MEDIUM HIGH }
+enum Contact { PRESCRIBER_OFFICE PAYER PATIENT SPECIALTY_PHARMACY INTERNAL NONE }
+
+type Me {
+  id: ID!
+  name: String!
+  role: Role!
+  permissions: [String!]!
+}
+
+type StaffRef {
+  id: ID!
+  name: String!
+  role: Role
+}
+
+# Patient fields as the caller's role is allowed to see them.
+type PatientView {
+  displayName: String!
+  dateOfBirth: String
+  memberId: String
+  phone: String
+  masked: Boolean!
+}
+
+type Prescriber {
+  name: String!
+  practice: String!
+  phone: String
+}
+
+type CaseEvent {
+  id: ID!
+  at: AWSDateTime!
+  type: String!
+  actor: StaffRef
+  summary: String!
+}
+
+type Task {
+  id: ID!
+  title: String!
+  dueAt: AWSDateTime!
+  assignee: StaffRef
+  status: String!
+  source: String!
+  createdAt: AWSDateTime!
+  completedAt: AWSDateTime
+  overdue: Boolean!
+}
+
+type Case {
+  id: ID!
+  patient: PatientView!
+  therapy: String!
+  payer: String!
+  prescriber: Prescriber!
+  step: Step!
+  stepLabel: String!
+  status: CaseStatus!
+  owner: StaffRef
+  stepEnteredAt: AWSDateTime!
+  daysInStep: Int!
+  slaDays: Int!
+  slaState: SlaState!
+  nextRefillDue: AWSDateTime
+  createdAt: AWSDateTime!
+  updatedAt: AWSDateTime!
+  version: Int!
+  synthetic: Boolean!
+  canEdit: Boolean!
+  canDraft: Boolean!
+  # Empty in list views; populated by Query.case.
+  events: [CaseEvent!]!
+  tasks: [Task!]!
+}
+
+type StepSummary {
+  step: Step!
+  label: String!
+  total: Int!
+  onTrack: Int!
+  atRisk: Int!
+  stuck: Int!
+  onHold: Int!
+}
+
+type Dashboard {
+  generatedAt: AWSDateTime!
+  totalOpen: Int!
+  unassigned: Int!
+  steps: [StepSummary!]!
+  stuckCases: [Case!]!
+}
+
+type SuggestedTask {
+  title: String!
+  dueInDays: Int!
+}
+
+# A drafted next action. Nothing happens until a person accepts it.
+type NextActionDraft {
+  caseId: ID!
+  situation: String!
+  nextAction: String!
+  rationale: String!
+  urgency: Urgency!
+  contact: Contact!
+  suggestedTask: SuggestedTask!
+  # Model ID, or "rules" when the deterministic fallback produced the draft.
+  generatedBy: String!
+  fallbackReason: String
+  # Identifier fields that were withheld from the model.
+  withheldFields: [String!]!
+}
+
+type AuditEvent {
+  id: ID!
+  at: AWSDateTime!
+  actorId: ID!
+  actorName: String!
+  actorRole: Role!
+  action: String!
+  outcome: String!
+  caseIds: [ID!]!
+  detail: String!
+}
+
+type AuditPage {
+  items: [AuditEvent!]!
+  nextToken: String
+}
+
+input CaseFilter {
+  scope: Scope
+  step: Step
+  slaState: SlaState
+  includeClosed: Boolean
+}
+
+input PatientInput {
+  firstName: String!
+  lastName: String!
+  dateOfBirth: String!
+  memberId: String!
+  phone: String!
+}
+
+input PrescriberInput {
+  name: String!
+  practice: String!
+  phone: String!
+}
+
+input CreateCaseInput {
+  patient: PatientInput!
+  therapy: String!
+  payer: String!
+  prescriber: PrescriberInput!
+}
+
+type Query {
+  me: Me!
+  staff: [StaffRef!]!
+  cases(filter: CaseFilter): [Case!]!
+  case(id: ID!): Case
+  dashboard: Dashboard!
+  auditLog(caseId: ID, limit: Int, nextToken: String): AuditPage!
+}
+
+type Mutation {
+  createCase(input: CreateCaseInput!): Case!
+  advanceStep(caseId: ID!, expectedVersion: Int!, note: String): Case!
+  setStatus(caseId: ID!, expectedVersion: Int!, status: CaseStatus!, reason: String!): Case!
+  addNote(caseId: ID!, kind: NoteKind!, text: String!): Case!
+  recordRefillCheckIn(caseId: ID!, note: String): Case!
+  assignCase(caseId: ID!, ownerId: ID): Case!
+  addTask(caseId: ID!, title: String!, dueAt: AWSDateTime!, assigneeId: ID): Case!
+  completeTask(caseId: ID!, taskId: ID!): Case!
+  draftNextAction(caseId: ID!): NextActionDraft!
+  acceptDraft(caseId: ID!, title: String!, dueInDays: Int!, rationale: String): Case!
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+}
